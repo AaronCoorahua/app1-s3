@@ -1,98 +1,87 @@
-from flask import Flask, request,jsonify, render_template
-import  json
+from flask import Flask, request, jsonify
+from flask_restx import Api, Resource, fields
 import sqlite3
 
 app = Flask(__name__)
+api = Api(app, version='1.0', title='Student API', description='API for managing students')
 
-#an in memory students storage(using a list)
-#students = []
-#instead of a list,we need to create a connection to database where we store students
+# Namespace
+ns = api.namespace('students', description='Operations related to students')
+
+# Model for documentation
+student_model = api.model('Student', {
+    'id': fields.Integer(readOnly=True, description='The unique identifier of a student'),
+    'firstname': fields.String(required=True, description='First name of the student'),
+    'lastname': fields.String(required=True, description='Last name of the student'),
+    'gender': fields.String(required=True, description='Gender of the student'),
+    'age': fields.Integer(required=True, description='Age of the student')
+})
+
 def db_connection():
-	conn = None
-	try:
-		conn = sqlite3.connect('students.sqlite')
-	except sqlite3.error as e:
-		print(e)
-	return conn
+    conn = None
+    try:
+        conn = sqlite3.connect('students.sqlite')
+    except sqlite3.error as e:
+        print(e)
+    return conn
 
-@app.route("/students" , methods=["GET","POST"])
-def students():
-	#access the db connection
-	conn = db_connection()
-	#access the cursor object
-	cursor = conn.cursor()
+@ns.route('/')
+class Students(Resource):
+    @api.doc(responses={200: 'OK', 400: 'Invalid Argument'}, description='Get or add students')
+    @api.expect(student_model, validate=True)
+    def get(self):
+        """List all students"""
+        conn = db_connection()
+        cursor = conn.execute("SELECT * FROM students")
+        students = [
+            dict(id=row[0], firstname=row[1], lastname=row[2], gender=row[3], age=row[4])
+            for row in cursor.fetchall()
+        ]
+        return jsonify(students)
 
-#createing our GET request for all students
-	if request.method == "GET":
-		cursor = conn.execute("SELECT * FROM students")
-		students = [
-		  dict(id = row[0], firstname = row[1], lastname = row[2], gender = row[3] , age = row[4])
-		  for row in cursor.fetchall()
-		]
+    @api.expect(student_model, validate=True)
+    def post(self):
+        """Create a new student"""
+        conn = db_connection()
+        cursor = conn.cursor()
+        new_student = request.json
+        sql = """INSERT INTO students (firstname, lastname, gender, age) VALUES (?, ?, ?, ?)"""
+        cursor.execute(sql, (new_student['firstname'], new_student['lastname'], new_student['gender'], new_student['age']))
+        conn.commit()
+        return {"result": f"Student with id: {cursor.lastrowid} created successfully"}, 201
 
-		if students is not None:
-			return jsonify(students)
-#createing our POST request for a student
-	if request.method == "POST":
-		firstname = request.form["firstname"]
-		lastname = request.form["lastname"]
-		gender = request.form["gender"]
-		age  = request.form["age"]
-		#SQL  query to INSERT a student INTO our database
-		sql = """INSERT INTO students (firstname, lastname, gender, age)
-				 VALUES (?, ?, ?, ?) """
+@ns.route('/<int:id>')
+@api.response(404, 'Student not found')
+class Student(Resource):
+    @api.doc(description='Get, update, or delete a student by their ID')
+    @api.expect(student_model, validate=True)
+    def get(self, id):
+        """Fetch a student given its identifier"""
+        conn = db_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT * FROM students WHERE id=?", (id,))
+        row = cursor.fetchone()
+        if row is not None:
+            return jsonify(dict(id=row[0], firstname=row[1], lastname=row[2], gender=row[3], age=row[4]))
+        api.abort(404, "Student not found")
 
-		cursor = cursor.execute(sql, (firstname, lastname, gender, age))
-		conn.commit()
-		return f"Student with id: {cursor.lastrowid} created successfully"
+    @api.expect(student_model, validate=True)
+    def put(self, id):
+        """Update a student given its identifier"""
+        conn = db_connection()
+        student = request.json
+        sql = """UPDATE students SET firstname=?, lastname=?, gender=?, age=? WHERE id=?"""
+        conn.execute(sql, (student['firstname'], student['lastname'], student['gender'], student['age'], id))
+        conn.commit()
+        return jsonify(student)
 
-#a route with all the neccesary request methods for a single student	
-@app.route('/student/<int:id>',methods=[ "GET", "PUT", "DELETE" ])
-def student(id):
-	conn = db_connection()
-	cursor = conn.cursor()
-	student = None
-
-#createing our GET request for a student
-	if request.method == "GET":
-		cursor.execute("SELECT * FROM students WHERE id=?",(id,) )
-		rows = cursor.fetchall()
-		for row in rows:
-			student = row
-		if student is not None:
-			return jsonify(student), 200
-		else:
-			return "Something went wrong", 404
-
-#createing our PUT request for a student
-	if request.method == "PUT":
-		sql = """ UPDATE students SET firstname = ?,lastname = ?, gender = ? , age = ?
-				  WHERE id = ? """
-
-		firstname = request.form["firstname"]
-		lastname = request.form["lastname"]
-		gender = request.form["gender"]
-		age = request.form["age"]
-
-		updated_student = {
-			"id": id,
-			"firstname": firstname,
-			"lastname" : lastname,
-			"gender" : gender,
-			"age" : age
-		}
-
-		conn.execute(sql,(firstname, lastname, gender, age, id))
-		conn.commit()
-		return jsonify(updated_student)
-
-#createing our DELETE request for a student
-	if request.method == "DELETE":
-		sql= """ DELETE FROM students WHERE id=? """
-		conn.execute(sql, (id,))
-		conn.commit()
-
-		return "The Student with id: {} has been deleted.".format(id),200
+    def delete(self, id):
+        """Delete a student given its identifier"""
+        conn = db_connection()
+        sql = """DELETE FROM students WHERE id=?"""
+        conn.execute(sql, (id,))
+        conn.commit()
+        return {"result": f"The student with id: {id} has been deleted"}, 200
 
 if __name__ == '__main__':
-   app.run(host='0.0.0.0', port=8000, debug=False)
+    app.run(debug=True, host='0.0.0.0', port=8000)
